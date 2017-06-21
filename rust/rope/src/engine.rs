@@ -47,7 +47,7 @@ struct Revision {
 
 use self::Contents::*;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 enum Contents {
     Edit {
         priority: usize,
@@ -466,6 +466,22 @@ impl Engine {
 
 // ======== Merge helpers
 
+/// Find an index before which everything is the same
+fn find_base(a: &[Revision], b: &[Revision]) -> usize {
+    // TODO find the maximum base revision.
+    // this should have the same behavior, but worse performance
+    return 0;
+}
+
+/// Find a set of revisions common to both lists
+fn find_common(a: &[Revision], b: &[Revision]) -> BTreeSet<usize> {
+    // TODO: will the common revs always occur in the same order in both sets,
+    // can we take advantage of that to make this faster?
+    let a_ids: BTreeSet<usize> = a.iter().map(|r| r.rev_id).collect();
+    let b_ids: BTreeSet<usize> = b.iter().map(|r| r.rev_id).collect();
+    a_ids.intersection(&b_ids).cloned().collect()
+}
+
 /// Returns the operations in `revs` that don't have their `rev_id` in
 /// `base_revs`, but modified so that they are in the same order but based on
 /// the `base_revs`. This allows the rest of the merge to operate on
@@ -813,5 +829,36 @@ mod tests {
         #------
         ");
         assert_eq!(correct, rearranged_inserts);
+    }
+
+    fn ids_to_fake_revs(ids: &[usize]) -> Vec<Revision> {
+        let contents = Contents::Edit {
+            priority: 0,
+            undo_group: 0,
+            inserts: Subset::new(0),
+            deletes: Subset::new(0),
+        };
+
+        ids.iter().cloned().map(|i| Revision { rev_id: i, max_undo_so_far: i, edit: contents.clone()}).collect()
+    }
+
+    #[test]
+    fn find_common_1() {
+        let a: Vec<Revision> = ids_to_fake_revs(&[0,2,4,6,8,10,12]);
+        let b: Vec<Revision> = ids_to_fake_revs(&[0,1,2,4,5,8,9]);
+        let res = find_common(&a[..], &b[..]);
+
+        let correct: BTreeSet<usize> = [0,2,4,8].iter().cloned().collect();
+        assert_eq!(correct, res);
+    }
+
+
+    #[test]
+    fn find_base_1() {
+        let a: Vec<Revision> = ids_to_fake_revs(&[0,2,4,6,8,10,12]);
+        let b: Vec<Revision> = ids_to_fake_revs(&[0,1,2,4,5,8,9]);
+        let res = find_base(&a[..], &b[..]);
+
+        assert_eq!(0, res);
     }
 }
