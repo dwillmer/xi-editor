@@ -464,13 +464,57 @@ impl Engine {
     }
 }
 
+// ======== Merge helpers
+
+/// Returns the operations in `revs` that don't have their `rev_id` in
+/// `base_revs`, but modified so that they are in the same order but based on
+/// the `base_revs`. This allows the rest of the merge to operate on
+///
+/// Conceptually, see the diagram below, with `.` being base revs and `n` being
+/// non-base revs, `N` being transformed non-base revs, and rearranges it:
+/// .n..n...nn..  -> ........NNNN -> returns vec![N,N,N,N]
+fn rearrange(revs: &[Revision], base_revs: &BTreeSet<usize>) -> Vec<Contents> {
+    let mut s_opt = None;
+
+    let mut out = Vec::with_capacity(revs.len() - base_revs.len());
+    for rev in revs.iter().rev() {
+        let is_base = base_revs.contains(&rev.rev_id);
+        match rev.edit {
+            Contents::Edit {priority, undo_group, ref inserts, ref deletes} => {
+                let s = match s_opt {
+                    Some(s) => s,
+                    None => Subset::new(inserts.len()),
+                };
+                if is_base {
+                    s_opt = Some(inserts.transform_union(&s));
+                } else {
+                    let transformed_inserts = inserts.transform_expand(&s);
+                    s_opt = Some(s.transform_shrink(&transformed_inserts));
+                    let transformed_deletes = deletes.transform_expand(&s);
+                    out.push(Contents::Edit {
+                        inserts: transformed_inserts,
+                        deletes: transformed_deletes,
+                        priority, undo_group,
+                    });
+                }
+            },
+            Contents::Undo { .. } => panic!("can't merge undo yet"),
+        }
+    }
+
+    out.as_mut_slice().reverse();
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use engine::Engine;
+    use engine::*;
     use rope::{Rope, RopeInfo};
     use delta::{Builder, Delta};
+    use multiset::Subset;
     use interval::Interval;
     use std::collections::BTreeSet;
+    use test_helpers::{parse_subset_list, debug_subsets};
 
     const TEST_STR: &'static str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
@@ -724,5 +768,50 @@ mod tests {
         // since one of the two deletes was gc'd this should re-do the one that wasn't
         engine.undo([].iter().cloned().collect());
         assert_eq!("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", String::from(engine.get_head()));
+    }
+
+    fn basic_insert_ops(inserts: Vec<Subset>, priority: usize) -> Vec<Revision> {
+        inserts.into_iter().enumerate().map(|(i, inserts)| {
+            let deletes = Subset::new(inserts.len());
+            Revision {
+                rev_id: i+1,
+                max_undo_so_far: i+1,
+                edit: Contents::Edit {
+                    priority, inserts, deletes,
+                    undo_group: i+1,
+                }
+            }
+        }).collect()
+    }
+
+    #[test]
+    fn rearrange_1() {
+        let inserts = parse_subset_list("
+        ##
+        -#-
+        #---
+        ---#-
+        -----#
+        #------
+        ");
+        let revs = basic_insert_ops(inserts, 1);
+        let base: BTreeSet<usize> = [3,5].iter().cloned().collect();
+
+        let rearranged = rearrange(&revs, &base);
+        let rearranged_inserts: Vec<Subset> = rearranged.into_iter().map(|c| {
+            match c {
+                Contents::Edit {inserts, ..} => inserts,
+                Contents::Undo { .. } => panic!(),
+            }
+        }).collect();
+
+        debug_subsets(&rearranged_inserts);
+        let correct = parse_subset_list("
+        -##-
+        --#--
+        ---#--
+        #------
+        ");
+        assert_eq!(correct, rearranged_inserts);
     }
 }
